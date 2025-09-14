@@ -1,0 +1,34 @@
+### Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+.tox/
+.nox/
+
+### Environments
+.venv/
+venv/
+env/
+.env
+.env.*
+
+### Data (local-only)
+data/
+*.parquet
+*.db
+*.sqlite
+
+### IDE/OS
+.DS_Store
+.vscode/
+.idea/
+Thumbs.db
+
+### Node (if any future build tooling)
+node_modules/
