@@ -5,6 +5,10 @@ services:
     runtime: python
     plan: free
     autoDeploy: true
+    disk:
+      name: coverdrive-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 5
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn backend.app:app --host 0.0.0.0 --port $PORT
     envVars:
