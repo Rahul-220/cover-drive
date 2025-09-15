@@ -24,8 +24,11 @@ MATCHES_DIR = PARQUET_DIR / "matches"
 DELIVERIES_GLOB = (DELIVERIES_DIR / "season=*" / "**" / "*.parquet").as_posix()
 MATCHES_GLOB    = (MATCHES_DIR    / "season=*" / "**" / "*.parquet").as_posix()
 
+# Optional path to a DuckDB snapshot file (e.g., data/ipl.duckdb)
+DUCKDB_PATH = os.getenv("DUCKDB_PATH")
+
 # ---------------- DuckDB ----------------
-con = duckdb.connect()
+con = duckdb.connect(DUCKDB_PATH) if DUCKDB_PATH else duckdb.connect()
 # If you want explicit threads, set an INT (some builds reject 'auto')
 threads = max(1, (os.cpu_count() or 4))
 con.execute(f"PRAGMA threads={threads}")
@@ -41,45 +44,55 @@ def init_views() -> None:
     """
     Create views and expose typed helpers the LLM can safely use.
     """
-    # deliveries: expose season_year (INT) even if 'season' is stringy in the files
-    # Source view: deliveries_src (may be empty on fresh deploys)
-    if _has_any_parquet(DELIVERIES_DIR):
-        con.execute(f"""
-            CREATE OR REPLACE VIEW deliveries_src AS
-            SELECT * FROM read_parquet('{DELIVERIES_GLOB}');
-        """)
-    else:
-        # Create an empty schema-compatible placeholder
-        con.execute(
-            """
-            CREATE OR REPLACE VIEW deliveries_src AS
-            SELECT
-                CAST(NULL AS VARCHAR) AS match_id,
-                CAST(NULL AS VARCHAR) AS season,
-                CAST(NULL AS INTEGER) AS inning,
-                CAST(NULL AS INTEGER) AS over,
-                CAST(NULL AS INTEGER) AS ball_in_over,
-                CAST(NULL AS VARCHAR) AS batting_team,
-                CAST(NULL AS VARCHAR) AS batter,
-                CAST(NULL AS VARCHAR) AS non_striker,
-                CAST(NULL AS VARCHAR) AS bowler,
-                CAST(NULL AS INTEGER) AS runs_batter,
-                CAST(NULL AS INTEGER) AS runs_total,
-                CAST(NULL AS INTEGER) AS extras_total,
-                CAST(NULL AS INTEGER) AS wides,
-                CAST(NULL AS INTEGER) AS noballs,
-                CAST(NULL AS INTEGER) AS legbyes,
-                CAST(NULL AS INTEGER) AS byes,
-                CAST(NULL AS INTEGER) AS penalty,
-                CAST(NULL AS VARCHAR) AS dismissal_kind,
-                CAST(NULL AS VARCHAR) AS player_out,
-                CAST(NULL AS VARCHAR) AS fielder,
-                CAST(NULL AS VARCHAR) AS venue,
-                CAST(NULL AS VARCHAR) AS city,
-                CAST(NULL AS VARCHAR) AS date
-            WHERE 1=0;
-            """
-        )
+    # deliveries_src / matches_src: prefer snapshot tables if available
+    used_snapshot_sources = False
+    if DUCKDB_PATH:
+        try:
+            con.execute("CREATE OR REPLACE VIEW deliveries_src AS SELECT * FROM deliveries")
+            con.execute("CREATE OR REPLACE VIEW matches_src AS SELECT * FROM matches")
+            used_snapshot_sources = True
+        except Exception:
+            used_snapshot_sources = False
+
+    if not used_snapshot_sources:
+        # Source view: deliveries_src (may be empty on fresh deploys)
+        if _has_any_parquet(DELIVERIES_DIR):
+            con.execute(f"""
+                CREATE OR REPLACE VIEW deliveries_src AS
+                SELECT * FROM read_parquet('{DELIVERIES_GLOB}');
+            """)
+        else:
+            # Create an empty schema-compatible placeholder
+            con.execute(
+                """
+                CREATE OR REPLACE VIEW deliveries_src AS
+                SELECT
+                    CAST(NULL AS VARCHAR) AS match_id,
+                    CAST(NULL AS VARCHAR) AS season,
+                    CAST(NULL AS INTEGER) AS inning,
+                    CAST(NULL AS INTEGER) AS over,
+                    CAST(NULL AS INTEGER) AS ball_in_over,
+                    CAST(NULL AS VARCHAR) AS batting_team,
+                    CAST(NULL AS VARCHAR) AS batter,
+                    CAST(NULL AS VARCHAR) AS non_striker,
+                    CAST(NULL AS VARCHAR) AS bowler,
+                    CAST(NULL AS INTEGER) AS runs_batter,
+                    CAST(NULL AS INTEGER) AS runs_total,
+                    CAST(NULL AS INTEGER) AS extras_total,
+                    CAST(NULL AS INTEGER) AS wides,
+                    CAST(NULL AS INTEGER) AS noballs,
+                    CAST(NULL AS INTEGER) AS legbyes,
+                    CAST(NULL AS INTEGER) AS byes,
+                    CAST(NULL AS INTEGER) AS penalty,
+                    CAST(NULL AS VARCHAR) AS dismissal_kind,
+                    CAST(NULL AS VARCHAR) AS player_out,
+                    CAST(NULL AS VARCHAR) AS fielder,
+                    CAST(NULL AS VARCHAR) AS venue,
+                    CAST(NULL AS VARCHAR) AS city,
+                    CAST(NULL AS VARCHAR) AS date
+                WHERE 1=0;
+                """
+            )
 
     # Public view adds typed helper column
     con.execute(
@@ -95,32 +108,33 @@ def init_views() -> None:
         """
     )
 
-    # matches: typed timestamp/date + year to guide the LLM
-    # Source view: matches_src (may be empty on fresh deploys)
-    if _has_any_parquet(MATCHES_DIR):
-        con.execute(f"""
-            CREATE OR REPLACE VIEW matches_src AS
-            SELECT * FROM read_parquet('{MATCHES_GLOB}');
-        """)
-    else:
-        con.execute(
-            """
-            CREATE OR REPLACE VIEW matches_src AS
-            SELECT
-                CAST(NULL AS VARCHAR) AS match_id,
-                CAST(NULL AS VARCHAR) AS season,
-                CAST(NULL AS VARCHAR) AS date,
-                CAST(NULL AS VARCHAR) AS competition,
-                CAST(NULL AS VARCHAR) AS venue,
-                CAST(NULL AS VARCHAR) AS city,
-                CAST(NULL AS VARCHAR) AS team1,
-                CAST(NULL AS VARCHAR) AS team2,
-                CAST(NULL AS VARCHAR) AS winner,
-                CAST(NULL AS VARCHAR) AS toss_winner,
-                CAST(NULL AS VARCHAR) AS toss_decision
-            WHERE 1=0;
-            """
-        )
+    if not used_snapshot_sources:
+        # matches: typed timestamp/date + year to guide the LLM
+        # Source view: matches_src (may be empty on fresh deploys)
+        if _has_any_parquet(MATCHES_DIR):
+            con.execute(f"""
+                CREATE OR REPLACE VIEW matches_src AS
+                SELECT * FROM read_parquet('{MATCHES_GLOB}');
+            """)
+        else:
+            con.execute(
+                """
+                CREATE OR REPLACE VIEW matches_src AS
+                SELECT
+                    CAST(NULL AS VARCHAR) AS match_id,
+                    CAST(NULL AS VARCHAR) AS season,
+                    CAST(NULL AS VARCHAR) AS date,
+                    CAST(NULL AS VARCHAR) AS competition,
+                    CAST(NULL AS VARCHAR) AS venue,
+                    CAST(NULL AS VARCHAR) AS city,
+                    CAST(NULL AS VARCHAR) AS team1,
+                    CAST(NULL AS VARCHAR) AS team2,
+                    CAST(NULL AS VARCHAR) AS winner,
+                    CAST(NULL AS VARCHAR) AS toss_winner,
+                    CAST(NULL AS VARCHAR) AS toss_decision
+                WHERE 1=0;
+                """
+            )
 
     # Public view adds typed helper columns
     con.execute(

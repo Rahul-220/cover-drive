@@ -10,7 +10,23 @@ services:
       mountPath: /opt/render/project/src/data
       sizeGB: 5
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn backend.app:app --host 0.0.0.0 --port $PORT
+    startCommand: |
+      bash -lc "set -euo pipefail
+      export DUCKDB_PATH=data/ipl.duckdb
+      python - <<'PY'
+      import os, urllib.request, pathlib
+      url = os.environ.get('DUCKDB_URL')
+      p = pathlib.Path('data/ipl.duckdb')
+      p.parent.mkdir(parents=True, exist_ok=True)
+      if url and not p.exists():
+          print('Downloading DuckDB snapshot...', flush=True)
+          with urllib.request.urlopen(url) as r, open(p, 'wb') as f:
+              f.write(r.read())
+          print('Download complete.', flush=True)
+      PY
+      exec uvicorn backend.app:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: GEMINI_API_KEY
         sync: false  # set in Render dashboard
+      - key: DUCKDB_URL
+        sync: false  # public URL to ipl.duckdb snapshot

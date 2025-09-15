@@ -21,6 +21,7 @@ env/
 ### Data (local-only)
 data/
 *.parquet
+*.duckdb
 *.db
 *.sqlite
 

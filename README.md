@@ -8,7 +8,9 @@ Replace OWNER/REPO with your repo path after pushing.
 
 **Features**
 - FastAPI backend with `/nlq` endpoint (NL → validated DuckDB SELECT).
-- DuckDB views over Hive‑partitioned Parquet (`data/parquet/{matches,deliveries}/season=YYYY`).
+- Supports two data sources:
+  - Hive‑partitioned Parquet (`data/parquet/{matches,deliveries}/season=YYYY`).
+  - Single DuckDB snapshot file (`data/ipl.duckdb`) with `deliveries` and `matches` tables.
 - React UMD single‑page UI served by FastAPI.
 - Dockerfile + GitHub Actions CI + Render deployment spec.
 
@@ -17,14 +19,16 @@ Replace OWNER/REPO with your repo path after pushing.
 - `backend/`: FastAPI app, mounts frontend and executes SQL.
 - `frontend/`: Static `index.html` + `CoverDrive.js` (global React/DOM).
 - `scripts/`: Helpers (run SQL against Parquet, Gemini prompt->SQL utilities).
-- `data/`: Local, ignored. Place Parquet here for queries.
+- `data/`: Local, ignored. Parquet or DuckDB snapshot lives here.
 
 ---
 
 ## Prerequisites
 - Python 3.11
-- Parquet produced in `data/parquet/` (see ETL below)
-- For NLQ (Gemini): set `GEMINI_API_KEY` in environment (never commit secrets). The app imports the Gemini helper but only calls it on `/nlq`.
+- One of:
+  - Parquet in `data/parquet/` (see ETL below), or
+  - DuckDB snapshot at `data/ipl.duckdb` (see Option B below)
+- For NLQ (Gemini): set `GEMINI_API_KEY` in environment (never commit secrets).
 
 ## Run Locally (no Docker)
 1) Create and activate venv, install deps
@@ -36,22 +40,48 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-2) Generate Parquet (if you have Cricsheet JSON)
+2) Either generate Parquet or point to a DuckDB snapshot
 
 ```
+# Parquet path
 python etl/parquet_etl.py
+
+# OR: use a DuckDB snapshot
+python backend/build_snapshot.py --db data/ipl.duckdb  # builds from existing Parquet if present
 ```
 
 3) Start API + UI
 
 ```
+# Using Parquet fallback
 uvicorn backend.app:app --reload --port 8000
-# open http://localhost:8000
+
+# Using DuckDB snapshot
+set DUCKDB_PATH=data/ipl.duckdb && uvicorn backend.app:app --reload --port 8000  # PowerShell
+# or (bash): DUCKDB_PATH=data/ipl.duckdb uvicorn backend.app:app --reload --port 8000
 ```
 
 Notes:
 - `/nlq` uses Gemini at request time; ensure `GEMINI_API_KEY` is set if you exercise that endpoint.
-- Without Parquet present, most queries will return empty/err.
+- Without Parquet or a snapshot, queries return empty results but the app boots.
+
+## Data snapshot (Option B)
+Build once locally, host the file, and let Render download it on startup.
+
+1) Build ipl.duckdb locally from Parquet
+
+```
+python backend/build_snapshot.py --db data/ipl.duckdb
+```
+
+2) Host the file (examples)
+- GitHub Releases: upload `ipl.duckdb` and copy the asset URL.
+- S3/Cloud storage: upload and use a presigned/public URL.
+
+3) Render download + startup
+- Set `DUCKDB_URL` in Render (public URL to `ipl.duckdb`).
+- `render.yaml` starts with a small downloader that saves to `data/ipl.duckdb` if missing, exports `DUCKDB_PATH`, and runs uvicorn.
+- To update data later: rebuild locally, upload new snapshot, update the hosted file/URL, and redeploy or restart.
 
 ## Run via Docker
 
@@ -61,12 +91,13 @@ Build and run locally:
 docker build -t coverdrive:local .
 docker run --rm -p 8000:8000 \
   -e GEMINI_API_KEY=your_key \
+  -e DUCKDB_PATH=/app/data/ipl.duckdb \
   -v %cd%/data:/app/data \  # Windows PowerShell (use $(pwd) on bash)
   coverdrive:local
 # open http://localhost:8000
 ```
 
-Mounting `./data` allows the container to see your local Parquet.
+Mounting `./data` allows the container to see your local `ipl.duckdb` or Parquet.
 
 ## CI (GitHub Actions)
 - Workflow: `.github/workflows/ci.yml`
@@ -84,8 +115,10 @@ This repo includes `render.yaml`. Steps:
    - Type: Web Service
    - Runtime: Python
    - Build: `pip install -r requirements.txt`
-   - Start: `uvicorn backend.app:app --host 0.0.0.0 --port ${PORT:-10000}`
-4) Environment variables: add `GEMINI_API_KEY` (leave out of git).
+   - Start: downloads `ipl.duckdb` to `data/ipl.duckdb` if missing, then starts uvicorn.
+4) Environment variables:
+   - `GEMINI_API_KEY`: for NLQ endpoint
+   - `DUCKDB_URL`: public URL to snapshot file (optional for local dev)
 5) Deploy. Render auto‑rebuilds on pushes to default branch.
 
 `render.yaml` excerpt:
@@ -94,11 +127,31 @@ This repo includes `render.yaml`. Steps:
 services:
   - type: web
     name: coverdrive
-    env: python
+    runtime: python
+    disk:
+      name: coverdrive-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 5
     buildCommand: pip install -r requirements.txt
-    startCommand: bash -lc 'uvicorn backend.app:app --host 0.0.0.0 --port ${PORT:-10000}'
+    startCommand: |
+      bash -lc "set -euo pipefail
+      export DUCKDB_PATH=data/ipl.duckdb
+      python - <<'PY'
+      import os, urllib.request, pathlib
+      url = os.environ.get('DUCKDB_URL')
+      p = pathlib.Path('data/ipl.duckdb')
+      p.parent.mkdir(parents=True, exist_ok=True)
+      if url and not p.exists():
+          print('Downloading DuckDB snapshot...', flush=True)
+          with urllib.request.urlopen(url) as r, open(p, 'wb') as f:
+              f.write(r.read())
+          print('Download complete.', flush=True)
+      PY
+      exec uvicorn backend.app:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: GEMINI_API_KEY
+        sync: false
+      - key: DUCKDB_URL
         sync: false
 ```
 
@@ -206,5 +259,6 @@ git push -u origin main
 ## Connect to Render
 1) Create a new Web Service (Blueprint) from your GitHub repo.
 2) Confirm build/start commands or rely on `render.yaml`.
-3) Add env var `GEMINI_API_KEY` in Render → Environment.
+3) Add env vars `GEMINI_API_KEY` and (optionally) `DUCKDB_URL` in Render → Environment.
 4) Deploy.
+
