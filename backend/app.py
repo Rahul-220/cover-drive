@@ -94,10 +94,11 @@ def init_views() -> None:
                 """
             )
 
-    # Public view adds typed helper column
-    con.execute(
+    # Public view adds typed helper column. If a TABLE named 'deliveries' already
+    # exists (from snapshot), skip replacing it and expose 'deliveries_typed' instead.
+    deliveries_view_sql = (
         """
-        CREATE OR REPLACE VIEW deliveries AS
+        CREATE OR REPLACE VIEW {name} AS
         SELECT
             d.*,
             COALESCE(
@@ -107,6 +108,12 @@ def init_views() -> None:
         FROM deliveries_src d;
         """
     )
+    try:
+        con.execute(deliveries_view_sql.format(name="deliveries"))
+    except Exception as e:
+        # Likely a TABLE named deliveries exists in snapshot; fall back to a suffixed view
+        logging.info("Could not create view 'deliveries' (will not override table). Creating 'deliveries_typed' instead. Error: %s", e)
+        con.execute(deliveries_view_sql.format(name="deliveries_typed"))
 
     if not used_snapshot_sources:
         # matches: typed timestamp/date + year to guide the LLM
@@ -136,10 +143,11 @@ def init_views() -> None:
                 """
             )
 
-    # Public view adds typed helper columns
-    con.execute(
+    # Public view adds typed helper columns. If a TABLE named 'matches' already
+    # exists (from snapshot), skip replacing it and expose 'matches_typed' instead.
+    matches_view_sql = (
         """
-        CREATE OR REPLACE VIEW matches AS
+        CREATE OR REPLACE VIEW {name} AS
         SELECT
             m.*,
             COALESCE(TRY_CAST(m.date AS TIMESTAMP), TRY_CAST(m.date AS DATE))                                        AS match_ts,
@@ -148,6 +156,11 @@ def init_views() -> None:
         FROM matches_src m;
         """
     )
+    try:
+        con.execute(matches_view_sql.format(name="matches"))
+    except Exception as e:
+        logging.info("Could not create view 'matches' (will not override table). Creating 'matches_typed' instead. Error: %s", e)
+        con.execute(matches_view_sql.format(name="matches_typed"))
 
 # ---------------- SQL extraction & normalization ----------------
 SQL_BLOCK_RE = re.compile(
