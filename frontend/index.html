@@ -1,16 +1,14 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <link rel="icon" href="/static/favicon.png" type="image/png" />
     <meta charset="utf-8" />
     <title>CoverDrive</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
 
     <!-- Tailwind v3 Play CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        // Important: configure via tailwind.config (not window.tailwind)
-        tailwind.config = { darkMode: 'class' };
-    </script>
+    <script>tailwind.config = { darkMode: 'class' };</script>
 
     <!-- React UMD (globals) -->
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -19,16 +17,13 @@
   <body class="bg-gray-50 dark:bg-gray-900">
     <div id="root"></div>
 
-    <!-- Your app (classic script, attaches `window.CoverDrive`) -->
-    <script src="/static/CoverDrive.js"></script>
+    <!-- Cache-bust the app script so browsers fetch the new one -->
+    <script src="/static/CoverDrive.js?v=2025-09-18-3"></script>
 
-    <!-- Render after everything is loaded -->
     <script>
       (function render() {
-        if (!window.CoverDrive || !window.ReactDOM) {
-          console.warn("Waiting for scripts...");
-          return setTimeout(render, 50);
-        }
+        if (!window.CoverDrive || !window.ReactDOM) return setTimeout(render, 50);
+        console.log("CoverDrive UI v2025-09-18-3");
         const root = ReactDOM.createRoot(document.getElementById("root"));
         root.render(React.createElement(window.CoverDrive));
       })();

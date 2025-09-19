@@ -10,3 +10,4 @@ python-dateutil>=2.9.0.post0
 
 # LLM SDK used by scripts/test_gemini_sql.py and imported by backend
 google-genai>=0.5.0
+python-dotenv>=1.0.1
