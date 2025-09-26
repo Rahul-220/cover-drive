@@ -133,8 +133,20 @@ def _extract_sdk(resp) -> str:
 
 
 # ---- LLM call (SDK only) ----
-def call_gemini(prompt_text: str, *, api_key: str | None = None,
-                model: str = MODEL, max_output_tokens: int = MAX_OUTPUT_TOKENS):
+def call_gemini(
+    prompt_text: str,
+    *,
+    api_key: str | None = None,
+    model: str = MODEL,
+    max_output_tokens: int = MAX_OUTPUT_TOKENS,
+    temperature: float = 0.2,
+    candidate_count: int = 1,
+    response_mime_type: str | None = None,
+):
+    """
+    Thin wrapper for google-genai that supports both client.responses.generate
+    and client.models.generate_content. Adds output control knobs.
+    """
     from google import genai
     from google.genai import types as genai_types
 
@@ -144,26 +156,35 @@ def call_gemini(prompt_text: str, *, api_key: str | None = None,
 
     client = genai.Client(api_key=key)
 
-    # Path A: responses.generate
+    # Build a config dict once; use in either path
+    cfg = {
+        "temperature": temperature,
+        "candidate_count": candidate_count,
+        "max_output_tokens": max_output_tokens,
+    }
+    if response_mime_type:
+        # Supported by both new responses.generate and models.generate_content
+        cfg["response_mime_type"] = response_mime_type
+
+    # Path A: responses.generate (newer API)
     if hasattr(client, "responses") and hasattr(client.responses, "generate"):
         return client.responses.generate(
             model=model,
             input=prompt_text,
-            config=genai_types.GenerateConfig(
-                temperature=0.0,
-                max_output_tokens=max_output_tokens
-            ),
+            config=genai_types.GenerateConfig(**cfg),
         )
 
-    # Path B: models.generate_content
+    # Path B: models.generate_content (older API)
     if hasattr(client, "models") and hasattr(client.models, "generate_content"):
         return client.models.generate_content(
             model=model,
             contents=[genai_types.Content(parts=[genai_types.Part(text=prompt_text)])],
-            config={"temperature": 0.0, "max_output_tokens": max_output_tokens},
+            # models.generate_content accepts a plain dict too
+            config=cfg,
         )
 
     raise RuntimeError("google-genai SDK does not expose a supported generate method.")
+
 
 
 # --- PUBLIC: import this in your backend ---

@@ -9,6 +9,7 @@ const API_BASE =
 // --- helper: apply/remove `dark` on <html> so body styles flip too ---
 function applyTheme(isDark) { document.documentElement.classList.toggle("dark", isDark); }
 
+// ---------- CSV + headings ----------
 function toCSV(columns, rows) {
   const escape = (val) => {
     if (val == null) return "";
@@ -21,7 +22,6 @@ function toCSV(columns, rows) {
   return head + (body ? "\n" + body : "");
 }
 
-// --- Pretty column names for users ---
 function titleCase(s) { return s.replace(/\b\w/g, (m) => m.toUpperCase()); }
 function humanizeIdent(id) { return titleCase(id.replace(/_/g, " ")); }
 function smartPrettyName(name) {
@@ -42,6 +42,7 @@ function smartPrettyName(name) {
   return humanizeIdent(n.replace(/\s+/g, " ").replace(/\(.*?\)/g, "").trim());
 }
 
+// ---------- UI bits ----------
 const Label = ({ children, htmlFor }) =>
   React.createElement("label", { htmlFor, className: "block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1" }, children);
 
@@ -85,6 +86,24 @@ const ResultsTable = ({ columns, rows }) => (
   )
 );
 
+// Small card to ask the user to disambiguate
+const ClarifyCard = ({ entity, mention, options, onPick }) => (
+  React.createElement("div", { className: "rounded-2xl border bg-white dark:bg-gray-900 dark:border-gray-700 p-4" },
+    React.createElement("div", { className: "text-sm text-gray-700 dark:text-gray-200 mb-3" },
+      `I need a choice for ${entity} "${mention}". Which one did you mean?`
+    ),
+    React.createElement("div", { className: "flex flex-wrap gap-2" },
+      (options || []).map((opt, i) =>
+        React.createElement("button", {
+          key: i,
+          onClick: () => onPick(opt),
+          className: "rounded-xl border px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 dark:border-gray-700"
+        }, opt)
+      )
+    )
+  )
+);
+
 // Safely parse JSON to avoid blank page on non-JSON errors
 async function safeJson(res) {
   const text = await res.text();
@@ -95,8 +114,10 @@ function CoverDrive() {
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [data, setData] = useState(null); // { columns, rows, notice?, meta? }
+  const [data, setData] = useState(null); // { columns, rows, notice?, meta?, sql? }
+  const [clarify, setClarify] = useState(null); // { entity, mention, options }
   const [dark, setDark] = useState(false);
+  const [devMode, setDevMode] = useState(false); // NEW: toggle to show SQL + send X-Debug
 
   useEffect(() => {
     const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -112,15 +133,22 @@ function CoverDrive() {
     return new Blob([csv], { type: "text/csv;charset=utf-8" });
   }, [data]);
 
-  async function ask() {
+  // Ask the backend. Accepts optional newQuestion (used after clarification).
+  async function ask(newQuestion) {
+    const q = (newQuestion ?? question).trim();
+    if (!q) return;
     setLoading(true);
     setError(null);
+    setData(null);
+    setClarify(null);
     try {
-      const body = { question: question.trim() };
       const res = await fetch(`${API_BASE}/nlq`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        headers: {
+          "Content-Type": "application/json",
+          "X-Debug": devMode ? "1" : "0",     // send header so backend can return SQL
+        },
+        body: JSON.stringify({ question: q }),
       });
 
       const json = await safeJson(res);
@@ -128,25 +156,49 @@ function CoverDrive() {
       if (!res.ok) {
         throw new Error(json?.message || (json?._raw ? String(json._raw).slice(0, 200) : `HTTP ${res.status}`));
       }
+
+      // Three shapes: success / error / needs_clarification
+      if (json?.status === "needs_clarification") {
+        setClarify({
+          entity: json.entity,
+          mention: json.mention,
+          options: json.options || [],
+        });
+        return; // don't set data yet
+      }
+
       if (json?.status === "error") {
         throw new Error(json?.message || "We’re working on this type of query. Try rephrasing or narrowing it.");
       }
-      if (json?.status === "ok") {
+
+      // Success if status === "ok" OR looks like the success shape (columns/rows arrays)
+      if (json?.status === "ok" || (Array.isArray(json?.columns) && Array.isArray(json?.rows))) {
         setData({
           columns: json.columns || [],
           rows: json.rows || [],
           notice: json.notice || null,
           meta: json.meta || {},
+          sql: json.sql || null,   // keep SQL for dev panel
         });
       } else {
         throw new Error("Unexpected response. Please try again.");
       }
+
     } catch (e) {
       setData(null);
       setError(e?.message || "Something went wrong");
     } finally {
       setLoading(false);
     }
+  }
+
+  // When user picks a clarification option, append a small disambiguation hint
+  function applyClarification(choice) {
+    if (!clarify) return;
+    const hint = ` (disambiguate: ${clarify.entity} "${clarify.mention}" = "${choice}")`;
+    const nextQ = question.includes(hint) ? question : (question + hint);
+    setQuestion(nextQ);
+    ask(nextQ);
   }
 
   const heading = useMemo(() => {
@@ -160,15 +212,25 @@ function CoverDrive() {
       React.createElement("div", { className: "min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 text-gray-900 dark:from-gray-950 dark:to-gray-900 dark:text-gray-100" },
         React.createElement("div", { className: "mx-auto max-w-3xl px-4 py-8 flex min-h-screen items-center justify-center" },
           React.createElement("div", { className: "w-full" },
+
+            // Header
             React.createElement("div", { className: "mb-6 flex items-center justify-between" },
               React.createElement("h1", { className: "text-2xl font-bold tracking-tight" }, "CoverDrive"),
-              React.createElement("button", {
-                onClick: () => setDark(!dark),
-                className: "rounded-xl border px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 dark:border-gray-700",
-                "aria-label": "Toggle theme"
-              }, dark ? "Light" : "Dark", " mode")
+              React.createElement("div", { className: "flex items-center gap-2" },
+                React.createElement("button", {
+                  onClick: () => setDevMode(!devMode),
+                  className: "rounded-xl border px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 dark:border-gray-700",
+                  title: "Toggle developer debug mode (shows SQL)"
+                }, devMode ? "Dev: ON" : "Dev: OFF"),
+                React.createElement("button", {
+                  onClick: () => setDark(!dark),
+                  className: "rounded-xl border px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 dark:border-gray-700",
+                  "aria-label": "Toggle theme"
+                }, dark ? "Light" : "Dark", " mode")
+              )
             ),
 
+            // Ask box
             React.createElement("div", { className: "rounded-2xl border bg-white dark:bg-gray-900 dark:border-gray-700 p-4 shadow-sm" },
               React.createElement(Label, { htmlFor: "q" }, "Your question"),
               React.createElement("textarea", {
@@ -181,7 +243,8 @@ function CoverDrive() {
               }),
               React.createElement("div", { className: "mt-3 flex justify-end" },
                 React.createElement("button", {
-                  onClick: ask, disabled: !canAsk,
+                  onClick: () => ask(),
+                  disabled: !canAsk,
                   className: "inline-flex items-center justify-center gap-2 rounded-xl bg-black px-4 py-2 font-medium text-white shadow-sm hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50",
                   "aria-busy": loading
                 }, loading ? React.createElement(Spinner) : "Ask")
@@ -189,6 +252,17 @@ function CoverDrive() {
               error && React.createElement("div", { className: "mt-4 rounded-lg border border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-900/30 p-3 text-sm text-red-700 dark:text-red-300" }, error)
             ),
 
+            // Clarification step (if needed)
+            clarify && React.createElement("div", { className: "mt-6" },
+              React.createElement(ClarifyCard, {
+                entity: clarify.entity,
+                mention: clarify.mention,
+                options: clarify.options,
+                onPick: applyClarification
+              })
+            ),
+
+            // Results
             data && React.createElement("div", { className: "mt-6 space-y-3" },
               React.createElement("div", { className: "flex items-center justify-between" },
                 React.createElement("h2", { className: "text-lg font-semibold text-gray-800 dark:text-gray-100" }, heading),
@@ -198,6 +272,23 @@ function CoverDrive() {
                   className: "rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 dark:border-gray-700"
                 }, "Download CSV")
               ),
+
+              // Dev panel: show SQL + resolutions when Dev Mode is ON
+              (devMode && (data.sql || (data.meta && data.meta.resolutions))) && React.createElement("div", { className: "rounded-xl border bg-white dark:bg-gray-900 dark:border-gray-700 p-4 space-y-3" },
+                data.sql && React.createElement("div", null,
+                  React.createElement("div", { className: "text-sm font-semibold text-gray-800 dark:text-gray-100 mb-1" }, "Generated SQL"),
+                  React.createElement("pre", { className: "overflow-x-auto p-3 text-xs leading-relaxed text-gray-900 dark:text-gray-100 bg-gray-50 dark:bg-gray-800 rounded-lg border dark:border-gray-700" },
+                    React.createElement("code", null, data.sql)
+                  )
+                ),
+                (data.meta && data.meta.resolutions) && React.createElement("div", null,
+                  React.createElement("div", { className: "text-sm font-semibold text-gray-800 dark:text-gray-100 mb-1" }, "Resolutions"),
+                  React.createElement("pre", { className: "overflow-x-auto p-3 text-xs leading-relaxed text-gray-900 dark:text-gray-100 bg-gray-50 dark:bg-gray-800 rounded-lg border dark:border-gray-700" },
+                    React.createElement("code", null, JSON.stringify(data.meta.resolutions, null, 2))
+                  )
+                )
+              ),
+
               (data.rows.length === 0) && React.createElement("div", {
                 className: "rounded-lg border border-blue-200 dark:border-blue-900 bg-blue-50/70 dark:bg-blue-900/30 p-3 text-sm text-blue-800 dark:text-blue-200"
               }, data.notice || "No results found. Try broadening the query or checking player/team spelling."),
