@@ -1,12 +1,17 @@
 from pathlib import Path
 from typing import List, Any, Optional, Union
 import logging, os, re, time, uuid
+import boto3
+from urllib.parse import urlparse
 
 import duckdb
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+from mangum import Mangum
 
 # ---------------- LLM -> SQL ----------------
 from scripts.test_gemini_sql import (
@@ -23,8 +28,19 @@ DELIVERIES_GLOB = (DELIVERIES_DIR / "season=*" / "**" / "*.parquet").as_posix()
 MATCHES_GLOB    = (MATCHES_DIR    / "season=*" / "**" / "*.parquet").as_posix()
 DUCKDB_PATH = os.getenv("DUCKDB_PATH")
 
+TMP_DUCKDB_LOCAL = "/tmp/ipl.duckdb"
+def download_if_s3(path: str) -> str:
+    if not path.lower().startswith("s3://"): 
+        return path
+    parsed = urlparse(path)
+    bucket, key = parsed.netloc, parsed.path.lstrip("/")
+    s3 = boto3.client("s3")
+    s3.download_file(bucket, key, TMP_DUCKDB_LOCAL)
+    return TMP_DUCKDB_LOCAL
+
 # ---------------- DuckDB ----------------
-con = duckdb.connect(DUCKDB_PATH) if DUCKDB_PATH else duckdb.connect()
+resolved_path = download_if_s3(DUCKDB_PATH) if DUCKDB_PATH else None
+con = duckdb.connect(resolved_path) if resolved_path else duckdb.connect()
 threads = max(1, (os.cpu_count() or 4))
 con.execute(f"PRAGMA threads={threads}")
 
@@ -213,7 +229,14 @@ def normalize_sql(sql: str) -> str:
 
 # ---------------- FastAPI ----------------
 app = FastAPI(title="CoverDrive")
-app.mount("/static", StaticFiles(directory=FRONTEND_DIR, html=False), name="static")
+
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],)
+
+
+if FRONTEND_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=FRONTEND_DIR, html=False), name="static")
+else:
+    print(f"[init] Skipping static mount, no folder found at {FRONTEND_DIR}")
 
 @app.get("/healthz", include_in_schema=False)
 def healthz(): return {"status": "ok"}
@@ -229,7 +252,8 @@ def favicon():
 @app.on_event("startup")
 def _on_startup():
     logging.basicConfig(level=logging.INFO)
-    assert (FRONTEND_DIR / "index.html").exists(), f"Missing {FRONTEND_DIR / 'index.html'}"
+    if FRONTEND_DIR.is_dir():
+        assert (FRONTEND_DIR / "index.html").exists(), f"Missing {FRONTEND_DIR / 'index.html'}"
     init_views()
 
 # ---------------- Models ----------------
@@ -300,3 +324,7 @@ def nlq(req: NLQRequest, request: Request):
     if debug:
         payload.sql = sql
     return payload
+
+
+# ---------------- AWS Lambda handler ----------------
+handler = Mangum(app)
