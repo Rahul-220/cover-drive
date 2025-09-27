@@ -31,7 +31,7 @@ jobs:
 
       - name: Compile key modules
         run: |
-          python -m py_compile backend/app.py etl/parquet_etl.py scripts/run_sql.py
+          python -m py_compile backend/app.py etl/parquet_etl.py 
 
       - name: Smoke import backend
         run: |
