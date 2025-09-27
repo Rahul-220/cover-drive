@@ -1,24 +1,18 @@
-# Dockerfile
-FROM python:3.11-slim
+# Lambda Python base image
+FROM public.ecr.aws/lambda/python:3.11
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+# Copy requirements and install (keeps image small)
+COPY requirements.txt .
+RUN python -m pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-WORKDIR /app
+# Copy your app code (backend + scripts folder)
+COPY backend ./backend
+COPY scripts ./scripts
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+# (Optional) If you want to bake parquet files into the image:
+# COPY data/parquet ./data/parquet
 
-# Copy application code
-COPY backend/ backend/
-COPY frontend/ frontend/
-COPY scripts/ scripts/
-COPY etl/ etl/
-COPY README.md ./
-
-EXPOSE 8000
-ENV PORT=8000
-
-CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8000"]
-
+# Tell Lambda which handler to run
+# (this matches: handler = Mangum(app) in backend/app.py)
+CMD ["backend.app.handler"]
