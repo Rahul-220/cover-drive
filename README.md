@@ -44,9 +44,9 @@ pip install -r requirements.txt
 ```
 # Using Parquet fallback
 uvicorn backend.app:app --reload --port 8000
+```
 
-
-Build and run locally:
+3) Build and run locally:
 
 ```
 docker build -t coverdrive:local .
