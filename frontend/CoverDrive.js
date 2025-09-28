@@ -6,7 +6,7 @@ const API_BASE =
   window?.FRONTEND_API_BASE ||
   (location.hostname === "localhost" || location.hostname === "127.0.0.1"
     ? "http://127.0.0.1:8000" // your local Uvicorn backend
-    : "https://her9vflmzj.execute-api.us-west-2.amazonaws.com/"); // your API Gateway
+    : "https://her9vflmzj.execute-api.us-west-2.amazonaws.com"); // your API Gateway
 
 
 // --- helper: apply/remove `dark` on <html> so body styles flip too ---
