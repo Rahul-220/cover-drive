@@ -25,9 +25,6 @@ Replace OWNER/REPO with your repo path after pushing.
 
 ## Prerequisites
 - Python 3.11
-- One of:
-  - Parquet in `data/parquet/` (see ETL below), or
-  - DuckDB snapshot at `data/ipl.duckdb` (see Option B below)
 
 ## Run Locally (no Docker)
 1) Create and activate venv, install deps
