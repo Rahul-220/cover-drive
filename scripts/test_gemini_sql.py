@@ -9,6 +9,7 @@ Used by the FastAPI backend. Requires GEMINI_API_KEY in environment.
 import os
 import re
 import sys
+import json
 
 # Load .env for local development (no-op if not present)
 try:
@@ -19,7 +20,7 @@ except Exception:
 
 # ---- env / config ----
 API_KEY = os.getenv("GEMINI_API_KEY")  # validated at call time
-MODEL = "gemini-2.5-flash"
+MODEL = os.getenv("GEMINI_MODEL") or "gemini-2.5-flash"
 MAX_OUTPUT_TOKENS = 800
 
 
@@ -44,6 +45,7 @@ def build_prompt(user_question: str) -> str:
         "- Year filters: prefer match_year on matches_q; or season_year on deliveries_q.\n"
         "- Wickets = dismissal_kind IN ('bowled','caught','lbw','stumped','hit wicket','caught and bowled').\n"
         "- Economy rate: runs_conceded = SUM(runs_total - byes - legbyes); legal_balls = SUM(CASE WHEN wides=0 AND noballs=0 THEN 1 ELSE 0 END); overs = legal_balls/6.0; economy = runs_conceded / NULLIF(overs,0).\n"
+        "- Economy queries MUST group by bowler and ORDER BY economy ASC (best = lowest). If a bowler filter is given (e.g., surname), add WHERE lower(bowler) LIKE '%name%'. Apply HAVING overs >= 20 by default.\n"
         "- Batter strike rate: balls_faced = SUM(CASE WHEN wides=0 AND noballs=0 THEN 1 ELSE 0 END) for that batter; strike_rate = 100.0*SUM(runs_batter)/NULLIF(balls_faced,0).\n"
         "- Sixes: runs_batter = 6.\n"
         "- Successful chase: inning=2 team equals matches_q.winner AND SUM(runs_total in inning 2) >= SUM(runs_total in inning 1); the target is inning 1 total.\n"
@@ -57,9 +59,52 @@ def build_prompt(user_question: str) -> str:
         "SQL: SELECT bowler, COUNT(*) AS wickets FROM deliveries_q WHERE season_year=2022 AND dismissal_kind IN ('bowled','caught','lbw','stumped','hit wicket','caught and bowled') GROUP BY bowler ORDER BY wickets DESC LIMIT 1\n"
         "Q: Which match had the highest total runs in 2023?\n"
         "SQL: SELECT d.match_id, SUM(d.runs_total) AS total_runs FROM deliveries_q d JOIN matches_q m USING(match_id) WHERE m.match_year=2023 GROUP BY d.match_id ORDER BY total_runs DESC LIMIT 1\n\n"
+        "Q: Best economy in 2024?\n"
+        "SQL: SELECT bowler, SUM(runs_total - byes - legbyes) / NULLIF(SUM(CASE WHEN wides=0 AND noballs=0 THEN 1 ELSE 0 END)/6.0,0) AS economy FROM deliveries_q WHERE season_year=2024 GROUP BY bowler HAVING SUM(CASE WHEN wides=0 AND noballs=0 THEN 1 ELSE 0 END)/6.0 >= 20 ORDER BY economy ASC LIMIT 1\n"
+        "Q: Best economy by Patel in 2024?\n"
+        "SQL: SELECT bowler, SUM(runs_total - byes - legbyes) / NULLIF(SUM(CASE WHEN wides=0 AND noballs=0 THEN 1 ELSE 0 END)/6.0,0) AS economy FROM deliveries_q WHERE season_year=2024 AND lower(bowler) LIKE '%patel%' GROUP BY bowler HAVING SUM(CASE WHEN wides=0 AND noballs=0 THEN 1 ELSE 0 END)/6.0 >= 20 ORDER BY economy ASC LIMIT 1\n\n"
         f"User question: {user_question}\n\nSQL:"
     )
 
+
+def build_prompt_json(user_question: str) -> str:
+    return (
+        "Return ONLY a single JSON object. No prose, no code fences.\n"
+        "Schema (choose exactly one type):\n"
+        "{\"type\":\"sql\", \"sql\":\"<duckdb select>\"}\n"
+        "or\n"
+        "{\"type\":\"clarify\", \"entity\":\"player|team|city|venue\", \"mention\":\"<ambiguous text>\", \"season\":2023}\n"
+        "Rules:\n"
+        "- If the question is ambiguous (e.g., surname-only), return type=clarify.\n"
+        "- If clear, return type=sql with a single SELECT (CTE WITH allowed).\n"
+        "- If you include season, use 4-digit year or null if not found.\n"
+        "- Do not include any extra keys.\n\n"
+        "Use these queryable views (stable across environments):\n"
+        "deliveries_q(\n"
+        "  match_id TEXT, season TEXT, season_year INT, inning INT, over INT, ball_in_over INT,\n"
+        "  batting_team TEXT, batter TEXT, non_striker TEXT, bowler TEXT,\n"
+        "  runs_batter INT, runs_total INT, extras_total INT, wides INT, noballs INT, legbyes INT, byes INT, penalty INT,\n"
+        "  dismissal_kind TEXT, player_out TEXT, fielder TEXT, venue TEXT, city TEXT, date TEXT\n"
+        ")\n"
+        "matches_q(\n"
+        "  match_id TEXT, season TEXT, date TEXT, competition TEXT, venue TEXT, city TEXT,\n"
+        "  team1 TEXT, team2 TEXT, winner TEXT, toss_winner TEXT, toss_decision TEXT,\n"
+        "  match_ts TIMESTAMP, match_date DATE, match_year INT\n"
+        ")\n"
+        "SQL Rules (only if type=sql):\n"
+        "- Use deliveries_q for ball-by-ball, matches_q for match-level; join USING(match_id) if needed.\n"
+        "- Year filters: prefer match_year on matches_q; or season_year on deliveries_q.\n"
+        "- Wickets = dismissal_kind IN ('bowled','caught','lbw','stumped','hit wicket','caught and bowled').\n"
+        "- Economy rate: runs_conceded = SUM(runs_total - byes - legbyes); legal_balls = SUM(CASE WHEN wides=0 AND noballs=0 THEN 1 ELSE 0 END); overs = legal_balls/6.0; economy = runs_conceded / NULLIF(overs,0).\n"
+        "- Economy queries MUST group by bowler and ORDER BY economy ASC (best = lowest). If a bowler filter is given (e.g., surname), add WHERE lower(bowler) LIKE '%name%'. Apply HAVING overs >= 20 by default.\n"
+        "- Batter strike rate: balls_faced = SUM(CASE WHEN wides=0 AND noballs=0 THEN 1 ELSE 0 END) for that batter; strike_rate = 100.0*SUM(runs_batter)/NULLIF(balls_faced,0).\n"
+        "- Sixes: runs_batter = 6.\n"
+        "- Successful chase: inning=2 team equals matches_q.winner AND SUM(runs_total in inning 2) >= SUM(runs_total in inning 1); the target is inning 1 total.\n"
+        "- If the question asks for 'top'/'most', include ORDER BY ... DESC and LIMIT N (default N=1 if unspecified).\n"
+        "- Do NOT use 'AS' after a table name without an alias; e.g., 'FROM matches_q AS m' (not 'FROM matches_q AS').\n"
+        "- Return a single SELECT (CTE WITH allowed).\n\n"
+        f"User question: {user_question}\n\nJSON:"
+    )
 
 # ---- cleanup & safety ----
 DENY_PATTERNS = [
@@ -132,6 +177,16 @@ def _extract_sdk(resp) -> str:
     return ""
 
 
+def _extract_json_obj(text: str) -> dict:
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    m = re.search(r"\{[\s\S]*\}", text)
+    if not m:
+        raise ValueError("JSON not found in LLM output")
+    return json.loads(m.group(0))
+
 # ---- LLM call (SDK only) ----
 def call_gemini(prompt_text: str, *, api_key: str | None = None,
                 model: str = MODEL, max_output_tokens: int = MAX_OUTPUT_TOKENS):
@@ -178,6 +233,44 @@ def generate_sql(question: str, *, api_key: str | None = None,
     text = _extract_sdk(resp)
     return clean_and_validate_sql_from_text(text)
 
+
+def generate_sql_or_clarify(question: str, *, api_key: str | None = None,
+                            model: str = MODEL, max_output_tokens: int = MAX_OUTPUT_TOKENS) -> dict:
+    """
+    Returns a dict:
+      {"type":"sql","sql":"..."} OR
+      {"type":"clarify","entity":"player|team|city|venue","mention":"...","season":2023}
+    """
+    prompt = build_prompt_json(question)
+    resp = call_gemini(prompt, api_key=api_key, model=model, max_output_tokens=max_output_tokens)
+    text = _extract_sdk(resp)
+    obj = _extract_json_obj(text)
+    if not isinstance(obj, dict) or "type" not in obj:
+        raise ValueError("Invalid JSON response from LLM")
+
+    t = str(obj.get("type", "")).lower().strip()
+    if t == "sql":
+        sql = obj.get("sql")
+        if not isinstance(sql, str):
+            raise ValueError("SQL missing in LLM response")
+        return {"type": "sql", "sql": clean_and_validate_sql_from_text(sql)}
+
+    if t == "clarify":
+        entity = str(obj.get("entity", "")).lower().strip()
+        if entity not in ("player", "team", "city", "venue"):
+            raise ValueError("Invalid entity for clarify response")
+        mention = str(obj.get("mention", "")).strip()
+        season = obj.get("season", None)
+        if season is None:
+            season_val = None
+        else:
+            try:
+                season_val = int(season)
+            except Exception:
+                season_val = None
+        return {"type": "clarify", "entity": entity, "mention": mention, "season": season_val}
+
+    raise ValueError("Unknown response type from LLM")
 
 def main():
     user_q = "Top run getter in Chennai for the past 3 seasons" if len(sys.argv) == 1 else " ".join(sys.argv[1:])
